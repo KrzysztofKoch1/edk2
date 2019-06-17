@@ -252,7 +252,6 @@ DumpProcessorHierarchyNodeStructure (
   )
 {
   UINT32 Offset;
-  UINT8* PrivateResourcePtr;
   UINT32 Index;
   CHAR16 Buffer[OUTPUT_FIELD_COLUMN_WIDTH];
 
@@ -265,8 +264,34 @@ DumpProcessorHierarchyNodeStructure (
              PARSER_PARAMS (ProcessorHierarchyNodeStructureParser)
              );
 
-  PrivateResourcePtr = Ptr + Offset;
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if (NumberOfPrivateResources == NULL) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient Processor Hierarchy Node length. Length = %d.\n",
+      Length
+      );
+    return;
+  }
+
+  // Make sure the Private Resource array lies inside this structure
+  if (Offset + (*NumberOfPrivateResources * sizeof (UINT32)) > Length) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid Number of Private Resources. " \
+        L"PrivateResourceCount = %d. RemainingBufferLength = %d. " \
+        L"Parsing of this structure aborted.\n",
+      *NumberOfPrivateResources,
+      Length - Offset
+      );
+    return;
+  }
+
   Index = 0;
+
+  // Parse the specified number of private resource references or the Processor
+  // Hierarchy Node length. Whichever is minimum.
   while (Index < *NumberOfPrivateResources) {
     UnicodeSPrint (
       Buffer,
@@ -278,10 +303,10 @@ DumpProcessorHierarchyNodeStructure (
     PrintFieldName (4, Buffer);
     Print (
       L"0x%x\n",
-      *((UINT32*) PrivateResourcePtr)
+      *((UINT32*)(Ptr + Offset))
       );
 
-    PrivateResourcePtr += sizeof(UINT32);
+    Offset += sizeof (UINT32);
     Index++;
   }
 }
@@ -373,6 +398,7 @@ ParseAcpiPptt (
              AcpiTableLength,
              PARSER_PARAMS (PpttParser)
              );
+
   ProcessorTopologyStructurePtr = Ptr + Offset;
 
   while (Offset < AcpiTableLength) {
@@ -382,19 +408,47 @@ ParseAcpiPptt (
       0,
       NULL,
       ProcessorTopologyStructurePtr,
-      4,  // Length of the processor topology structure header is 4 bytes
+      AcpiTableLength - Offset,
       PARSER_PARAMS (ProcessorTopologyStructureHeaderParser)
       );
 
-    if ((Offset + (*ProcessorTopologyStructureLength)) > AcpiTableLength) {
+    // Check if the values used to control the parsing logic have been
+    // successfully read.
+    if ((ProcessorTopologyStructureType == NULL) ||
+        (ProcessorTopologyStructureLength == NULL)) {
       IncrementErrorCount ();
       Print (
-        L"ERROR: Invalid processor topology structure length:"
-          L" Type = %d, Length = %d\n",
-        *ProcessorTopologyStructureType,
-        *ProcessorTopologyStructureLength
+        L"ERROR: Insufficient remaining table buffer length to read the " \
+          L"processor topology structure header. Length = %d.\n",
+        AcpiTableLength - Offset
         );
-      break;
+      return;
+    }
+
+    // Make sure forward progress is made.
+    if (*ProcessorTopologyStructureLength < 2) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Structure length is too small: " \
+          L"ProcessorTopologyStructureLength = %d. " \
+          L"ProcessorTopologyStructureType = %d. PPTT parsing aborted.\n",
+        *ProcessorTopologyStructureLength,
+        *ProcessorTopologyStructureType
+        );
+      return;
+    }
+
+    // Make sure the PPTT structure lies inside the table
+    if ((Offset + *ProcessorTopologyStructureLength) > AcpiTableLength) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Invalid PPTT structure length. " \
+          L"ProcessorTopologyStructureLength = %d. " \
+          L"RemainingTableBufferLength = %d. PPTT parsing aborted.\n",
+        *ProcessorTopologyStructureLength,
+        AcpiTableLength - Offset
+        );
+      return;
     }
 
     PrintFieldName (2, L"* Structure Offset *");
@@ -420,14 +474,17 @@ ParseAcpiPptt (
           );
         break;
       default:
-        IncrementErrorCount ();
-        Print (
-          L"ERROR: Unknown processor topology structure:"
-            L" Type = %d, Length = %d\n",
-          *ProcessorTopologyStructureType,
-          *ProcessorTopologyStructureLength
-          );
-    }
+        if (GetConsistencyChecking ()) {
+          IncrementErrorCount ();
+          Print (
+            L"ERROR: Unknown processor topology structure:"
+              L" Type = %d, Length = %d\n",
+            *ProcessorTopologyStructureType,
+            *ProcessorTopologyStructureLength
+            );
+        }
+        break;
+    } // switch
 
     ProcessorTopologyStructurePtr += *ProcessorTopologyStructureLength;
     Offset += *ProcessorTopologyStructureLength;
