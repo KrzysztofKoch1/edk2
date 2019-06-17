@@ -1,7 +1,7 @@
 /** @file
   XSDT table parser
 
-  Copyright (c) 2016 - 2018, ARM Limited. All rights reserved.
+  Copyright (c) 2016 - 2019, ARM Limited. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
   @par Reference(s):
@@ -13,6 +13,7 @@
 #include <Library/PrintLib.h>
 #include "AcpiParser.h"
 #include "AcpiTableParser.h"
+#include "AcpiView.h"
 
 // Local variables
 STATIC ACPI_DESCRIPTION_HEADER_INFO AcpiHdrInfo;
@@ -60,22 +61,12 @@ ParseAcpiXsdt (
   UINTN         EntryIndex;
   CHAR16        Buffer[32];
 
-  // Parse the ACPI header to get the length
-  ParseAcpi (
-    FALSE,
-    0,
-    "XSDT",
-    Ptr,
-    ACPI_DESCRIPTION_HEADER_LENGTH,
-    PARSER_PARAMS (XsdtParser)
-    );
-
   Offset = ParseAcpi (
              Trace,
              0,
              "XSDT",
              Ptr,
-             *AcpiHdrInfo.Length,
+             AcpiTableLength,
              PARSER_PARAMS (XsdtParser)
              );
 
@@ -84,7 +75,7 @@ ParseAcpiXsdt (
   if (Trace) {
     EntryIndex = 0;
     TablePointer = (UINT64*)(Ptr + TableOffset);
-    while (Offset < (*AcpiHdrInfo.Length)) {
+    while (Offset < AcpiTableLength) {
       CONST UINT32* Signature;
       CONST UINT32* Length;
       CONST UINT8*  Revision;
@@ -124,7 +115,8 @@ ParseAcpiXsdt (
       Print (L"0x%lx\n", *TablePointer);
 
       // Validate the table pointers are not NULL
-      if ((UINT64*)(UINTN)(*TablePointer) == NULL) {
+      if (GetConsistencyChecking () &&
+          ((UINT64*)(UINTN)(*TablePointer) == NULL)) {
         IncrementErrorCount ();
         Print (
           L"ERROR: Invalid table entry at 0x%lx, table address is 0x%lx\n",
@@ -140,7 +132,7 @@ ParseAcpiXsdt (
   // Process the tables
   Offset = TableOffset;
   TablePointer = (UINT64*)(Ptr + TableOffset);
-  while (Offset < (*AcpiHdrInfo.Length)) {
+  while (Offset < AcpiTableLength) {
     if ((UINT64*)(UINTN)(*TablePointer) != NULL) {
       ProcessAcpiTable ((UINT8*)(UINTN)(*TablePointer));
     }
