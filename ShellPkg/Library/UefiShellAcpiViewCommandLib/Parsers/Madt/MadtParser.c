@@ -15,6 +15,7 @@
 #include <Library/UefiLib.h>
 #include "AcpiParser.h"
 #include "AcpiTableParser.h"
+#include "AcpiView.h"
 #include "MadtParser.h"
 
 // Local Variables
@@ -35,7 +36,15 @@ EFIAPI
 ValidateGICDSystemVectorBase (
   IN UINT8* Ptr,
   IN VOID*  Context
-  );
+)
+{
+  if (*(UINT32*)Ptr != 0) {
+    IncrementErrorCount ();
+    Print (
+      L"\nERROR: System Vector Base must be zero."
+    );
+  }
+}
 
 /**
   This function validates the SPE Overflow Interrupt in the GICC.
@@ -50,7 +59,41 @@ EFIAPI
 ValidateSpeOverflowInterrupt (
   IN UINT8* Ptr,
   IN VOID*  Context
-  );
+  )
+{
+  UINT16 SpeOverflowInterrupt;
+
+  SpeOverflowInterrupt = *(UINT16*)Ptr;
+
+  // SPE not supported by this processor
+  if (SpeOverflowInterrupt == 0) {
+    return;
+  }
+
+  if ((SpeOverflowInterrupt < ARM_PPI_ID_MIN) ||
+      ((SpeOverflowInterrupt > ARM_PPI_ID_MAX) &&
+       (SpeOverflowInterrupt < ARM_PPI_ID_EXTENDED_MIN)) ||
+      (SpeOverflowInterrupt > ARM_PPI_ID_EXTENDED_MAX)) {
+    IncrementErrorCount ();
+    Print (
+      L"\nERROR: SPE Overflow Interrupt ID of %d is not in the allowed PPI ID "
+        L"ranges of %d-%d or %d-%d (for GICv3.1 or later).",
+      SpeOverflowInterrupt,
+      ARM_PPI_ID_MIN,
+      ARM_PPI_ID_MAX,
+      ARM_PPI_ID_EXTENDED_MIN,
+      ARM_PPI_ID_EXTENDED_MAX
+    );
+  } else if (SpeOverflowInterrupt != ARM_PPI_ID_PMBIRQ) {
+    IncrementWarningCount();
+    Print (
+      L"\nWARNING: SPE Overflow Interrupt ID of %d is not compliant with SBSA "
+        L"Level 3 PPI ID assignment: %d.",
+      SpeOverflowInterrupt,
+      ARM_PPI_ID_PMBIRQ
+    );
+  }
+}
 
 /**
   An ACPI_PARSER array describing the GICC Interrupt Controller Structure.
@@ -159,78 +202,6 @@ STATIC CONST ACPI_PARSER MadtInterruptControllerHeaderParser[] = {
 };
 
 /**
-  This function validates the System Vector Base in the GICD.
-
-  @param [in] Ptr     Pointer to the start of the field data.
-  @param [in] Context Pointer to context specific information e.g. this
-                      could be a pointer to the ACPI table header.
-**/
-STATIC
-VOID
-EFIAPI
-ValidateGICDSystemVectorBase (
-  IN UINT8* Ptr,
-  IN VOID*  Context
-)
-{
-  if (*(UINT32*)Ptr != 0) {
-    IncrementErrorCount ();
-    Print (
-      L"\nERROR: System Vector Base must be zero."
-    );
-  }
-}
-
-/**
-  This function validates the SPE Overflow Interrupt in the GICC.
-
-  @param [in] Ptr     Pointer to the start of the field data.
-  @param [in] Context Pointer to context specific information e.g. this
-                      could be a pointer to the ACPI table header.
-**/
-STATIC
-VOID
-EFIAPI
-ValidateSpeOverflowInterrupt (
-  IN UINT8* Ptr,
-  IN VOID*  Context
-  )
-{
-  UINT16 SpeOverflowInterrupt;
-
-  SpeOverflowInterrupt = *(UINT16*)Ptr;
-
-  // SPE not supported by this processor
-  if (SpeOverflowInterrupt == 0) {
-    return;
-  }
-
-  if ((SpeOverflowInterrupt < ARM_PPI_ID_MIN) ||
-      ((SpeOverflowInterrupt > ARM_PPI_ID_MAX) &&
-       (SpeOverflowInterrupt < ARM_PPI_ID_EXTENDED_MIN)) ||
-      (SpeOverflowInterrupt > ARM_PPI_ID_EXTENDED_MAX)) {
-    IncrementErrorCount ();
-    Print (
-      L"\nERROR: SPE Overflow Interrupt ID of %d is not in the allowed PPI ID "
-        L"ranges of %d-%d or %d-%d (for GICv3.1 or later).",
-      SpeOverflowInterrupt,
-      ARM_PPI_ID_MIN,
-      ARM_PPI_ID_MAX,
-      ARM_PPI_ID_EXTENDED_MIN,
-      ARM_PPI_ID_EXTENDED_MAX
-    );
-  } else if (SpeOverflowInterrupt != ARM_PPI_ID_PMBIRQ) {
-    IncrementWarningCount();
-    Print (
-      L"\nWARNING: SPE Overflow Interrupt ID of %d is not compliant with SBSA "
-        L"Level 3 PPI ID assignment: %d.",
-      SpeOverflowInterrupt,
-      ARM_PPI_ID_PMBIRQ
-    );
-  }
-}
-
-/**
   This function parses the ACPI MADT table.
   When trace is enabled this function parses the MADT table and
   traces the ACPI table fields.
@@ -286,20 +257,47 @@ ParseAcpiMadt (
       0,
       NULL,
       InterruptContollerPtr,
-      2,  //  Length is 1 byte at offset 1
+      AcpiTableLength - Offset,
       PARSER_PARAMS (MadtInterruptControllerHeaderParser)
       );
 
-    if (((Offset + (*MadtInterruptControllerLength)) > AcpiTableLength) ||
-        (*MadtInterruptControllerLength < 4)) {
+    // Check if the values used to control the parsing logic have been
+    // successfully read.
+    if ((MadtInterruptControllerType == NULL) ||
+        (MadtInterruptControllerLength == NULL)) {
       IncrementErrorCount ();
       Print (
-         L"ERROR: Invalid Interrupt Controller Length,"
-          L" Type = %d, Length = %d\n",
-         *MadtInterruptControllerType,
-         *MadtInterruptControllerLength
-         );
-      break;
+        L"ERROR: Insufficient remaining table buffer length to read the " \
+          L"Interrupt Controller Structure header. Length = %d.\n",
+        AcpiTableLength - Offset
+        );
+      return;
+    }
+
+    // Make sure forward progress is made.
+    if (*MadtInterruptControllerLength < 2) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Structure length is too small: " \
+          L"MadtInterruptControllerLength = %d. " \
+          L"MadtInterruptControllerType = %d. MADT parsing aborted.\n",
+        *MadtInterruptControllerLength,
+        *MadtInterruptControllerType
+        );
+      return;
+    }
+
+    // Make sure the MADT structure lies inside the table
+    if ((Offset + *MadtInterruptControllerLength) > AcpiTableLength) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Invalid MADT structure length. " \
+          L"MadtInterruptControllerLength = %d. " \
+          L"RemainingTableBufferLength = %d. MADT parsing aborted.\n",
+        *MadtInterruptControllerLength,
+        AcpiTableLength - Offset
+        );
+      return;
     }
 
     switch (*MadtInterruptControllerType) {
@@ -316,11 +314,11 @@ ParseAcpiMadt (
       }
 
       case EFI_ACPI_6_3_GICD: {
-        if (++GICDCount > 1) {
+        if (GetConsistencyChecking() &&
+            (++GICDCount > 1)) {
           IncrementErrorCount ();
           Print (
-            L"ERROR: Only one GICD must be present,"
-              L" GICDCount = %d\n",
+            L"ERROR: Only one GICD must be present. GICDCount = %d\n",
             GICDCount
             );
         }
@@ -372,13 +370,16 @@ ParseAcpiMadt (
       }
 
       default: {
-        IncrementErrorCount ();
-        Print (
-          L"ERROR: Unknown Interrupt Controller Structure,"
-            L" Type = %d, Length = %d\n",
-          *MadtInterruptControllerType,
-          *MadtInterruptControllerLength
-          );
+        if (GetConsistencyChecking ()) {
+          IncrementErrorCount ();
+          Print (
+            L"ERROR: Unknown Interrupt Controller Structure,"
+              L" Type = %d, Length = %d\n",
+            *MadtInterruptControllerType,
+            *MadtInterruptControllerLength
+            );
+        }
+        break;
       }
     } // switch
 
