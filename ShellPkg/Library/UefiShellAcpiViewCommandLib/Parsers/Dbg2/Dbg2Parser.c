@@ -12,6 +12,7 @@
 #include <Library/UefiLib.h>
 #include "AcpiParser.h"
 #include "AcpiTableParser.h"
+#include "AcpiView.h"
 
 // Local variables pointing to the table fields
 STATIC CONST UINT32* OffsetDbgDeviceInfo;
@@ -25,71 +26,6 @@ STATIC CONST UINT16* OEMDataOffset;
 STATIC CONST UINT16* BaseAddrRegOffset;
 STATIC CONST UINT16* AddrSizeOffset;
 STATIC ACPI_DESCRIPTION_HEADER_INFO AcpiHdrInfo;
-
-/**
-  This function Validates the NameSpace string length.
-
-  @param [in] Ptr     Pointer to the start of the buffer.
-  @param [in] Context Pointer to context specific information e.g. this
-                      could be a pointer to the ACPI table header.
-**/
-STATIC
-VOID
-EFIAPI
-ValidateNameSpaceStrLen (
-  IN  UINT8* Ptr,
-  IN  VOID*  Context
-  );
-
-/**
-  This function parses the debug device information structure.
-
-  @param [in]  Ptr     Pointer to the start of the buffer.
-  @param [out] Length  Pointer in which the length of the debug
-                       device information is returned.
-**/
-STATIC
-VOID
-EFIAPI
-DumpDbgDeviceInfo (
-  IN  UINT8*  Ptr,
-  OUT UINT32* Length
-  );
-
-/// An ACPI_PARSER array describing the ACPI DBG2 table.
-STATIC CONST ACPI_PARSER Dbg2Parser[] = {
-  PARSE_ACPI_HEADER (&AcpiHdrInfo),
-  {L"OffsetDbgDeviceInfo", 4, 36, L"0x%x", NULL,
-   (VOID**)&OffsetDbgDeviceInfo, NULL, NULL},
-  {L"NumberDbgDeviceInfo", 4, 40, L"%d", NULL,
-   (VOID**)&NumberDbgDeviceInfo, NULL, NULL}
-};
-
-/// An ACPI_PARSER array describing the debug device information.
-STATIC CONST ACPI_PARSER DbgDevInfoParser[] = {
-  {L"Revision", 1, 0, L"0x%x", NULL, NULL, NULL, NULL},
-  {L"Length", 2, 1, L"%d", NULL, (VOID**)&DbgDevInfoLen, NULL, NULL},
-
-  {L"Generic Address Registers Count", 1, 3, L"0x%x", NULL,
-   (VOID**)&GasCount, NULL, NULL},
-  {L"NameSpace String Length", 2, 4, L"%d", NULL,
-   (VOID**)&NameSpaceStringLength, ValidateNameSpaceStrLen, NULL},
-  {L"NameSpace String Offset", 2, 6, L"0x%x", NULL,
-   (VOID**)&NameSpaceStringOffset, NULL, NULL},
-  {L"OEM Data Length", 2, 8, L"%d", NULL, (VOID**)&OEMDataLength,
-   NULL, NULL},
-  {L"OEM Data Offset", 2, 10, L"0x%x", NULL, (VOID**)&OEMDataOffset,
-   NULL, NULL},
-
-  {L"Port Type", 2, 12, L"0x%x", NULL, NULL, NULL, NULL},
-  {L"Port SubType", 2, 14, L"0x%x", NULL, NULL, NULL, NULL},
-  {L"Reserved", 2, 16, L"%x", NULL, NULL, NULL, NULL},
-
-  {L"Base Address Register Offset", 2, 18, L"0x%x", NULL,
-   (VOID**)&BaseAddrRegOffset, NULL, NULL},
-  {L"Address Size Offset", 2, 20, L"0x%x", NULL,
-   (VOID**)&AddrSizeOffset, NULL, NULL}
-};
 
 /**
   This function validates the NameSpace string length.
@@ -113,86 +49,201 @@ ValidateNameSpaceStrLen (
   if (NameSpaceStrLen < 2) {
     IncrementErrorCount ();
     Print (
-      L"\nERROR: NamespaceString Length = %d. If no Namespace device exists,\n"
-       L"    then NamespaceString[] must contain a period '.'",
+      L"\nERROR: NamespaceString Length = %d. If no Namespace device exists, " \
+        L"NamespaceString[] must contain a period '.'",
       NameSpaceStrLen
       );
   }
 }
 
+/// An ACPI_PARSER array describing the ACPI DBG2 table.
+STATIC CONST ACPI_PARSER Dbg2Parser[] = {
+  PARSE_ACPI_HEADER (&AcpiHdrInfo),
+  {L"OffsetDbgDeviceInfo", 4, 36, L"0x%x", NULL,
+   (VOID**)&OffsetDbgDeviceInfo, NULL, NULL},
+  {L"NumberDbgDeviceInfo", 4, 40, L"%d", NULL,
+   (VOID**)&NumberDbgDeviceInfo, NULL, NULL}
+};
+
+/// An ACPI_PARSER array describing the debug device information structure
+/// header.
+STATIC CONST ACPI_PARSER DbgDevInfoHeaderParser[] = {
+  {L"Revision", 1, 0, L"0x%x", NULL, NULL, NULL, NULL},
+  {L"Length", 2, 1, L"%d", NULL, (VOID**)&DbgDevInfoLen, NULL, NULL}
+};
+
+/// An ACPI_PARSER array describing the debug device information.
+STATIC CONST ACPI_PARSER DbgDevInfoParser[] = {
+  {L"Revision", 1, 0, L"0x%x", NULL, NULL, NULL, NULL},
+  {L"Length", 2, 1, L"%d", NULL, NULL, NULL, NULL},
+
+  {L"Generic Address Registers Count", 1, 3, L"0x%x", NULL,
+   (VOID**)&GasCount, NULL, NULL},
+  {L"NameSpace String Length", 2, 4, L"%d", NULL,
+   (VOID**)&NameSpaceStringLength, ValidateNameSpaceStrLen, NULL},
+  {L"NameSpace String Offset", 2, 6, L"0x%x", NULL,
+   (VOID**)&NameSpaceStringOffset, NULL, NULL},
+  {L"OEM Data Length", 2, 8, L"%d", NULL, (VOID**)&OEMDataLength,
+   NULL, NULL},
+  {L"OEM Data Offset", 2, 10, L"0x%x", NULL, (VOID**)&OEMDataOffset,
+   NULL, NULL},
+
+  {L"Port Type", 2, 12, L"0x%x", NULL, NULL, NULL, NULL},
+  {L"Port SubType", 2, 14, L"0x%x", NULL, NULL, NULL, NULL},
+  {L"Reserved", 2, 16, L"%x", NULL, NULL, NULL, NULL},
+
+  {L"Base Address Register Offset", 2, 18, L"0x%x", NULL,
+   (VOID**)&BaseAddrRegOffset, NULL, NULL},
+  {L"Address Size Offset", 2, 20, L"0x%x", NULL,
+   (VOID**)&AddrSizeOffset, NULL, NULL}
+};
+
 /**
   This function parses the debug device information structure.
 
-  @param [in]  Ptr     Pointer to the start of the buffer.
-  @param [out] Length  Pointer in which the length of the debug
-                       device information is returned.
+  @param [in] Ptr     Pointer to the start of the buffer.
+  @param [in] Length  Length of the debug device information structure.
 **/
 STATIC
 VOID
 EFIAPI
 DumpDbgDeviceInfo (
-  IN  UINT8*  Ptr,
-  OUT UINT32* Length
+  IN UINT8* Ptr,
+  IN UINT16 Length
   )
 {
   UINT16  Index;
-  UINT8*  DataPtr;
-  UINT32* AddrSize;
-
-  // Parse the debug device info to get the Length
-  ParseAcpi (
-    FALSE,
-    0,
-    "Debug Device Info",
-    Ptr,
-    3,  // Length is 2 bytes starting at offset 1
-    PARSER_PARAMS (DbgDevInfoParser)
-    );
+  UINT16  Offset;
 
   ParseAcpi (
     TRUE,
     2,
     "Debug Device Info",
     Ptr,
-    *DbgDevInfoLen,
+    Length,
     PARSER_PARAMS (DbgDevInfoParser)
     );
 
-  // GAS and Address Size
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if ((GasCount == NULL)              ||
+      (NameSpaceStringLength == NULL) ||
+      (NameSpaceStringOffset == NULL) ||
+      (OEMDataLength == NULL)         ||
+      (OEMDataOffset == NULL)         ||
+      (BaseAddrRegOffset == NULL)     ||
+      (AddrSizeOffset == NULL)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient Debug Device Information Structure length. " \
+        L"Length = %d.\n",
+      Length
+      );
+    return;
+  }
+
+  // GAS
   Index = 0;
-  DataPtr = Ptr + (*BaseAddrRegOffset);
-  AddrSize = (UINT32*)(Ptr + (*AddrSizeOffset));
-  while (Index < (*GasCount)) {
+  Offset = *BaseAddrRegOffset;
+  while ((Index++ < *GasCount) &&
+         (Offset < Length)) {
     PrintFieldName (4, L"BaseAddressRegister");
-    DumpGasStruct (DataPtr, 4);
+    Offset += (UINT16)DumpGasStruct (
+                        Ptr + Offset,
+                        4,
+                        Length - Offset
+                        );
+  }
+
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *GasCount)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid GAS count. GasCount = %d. DbgDevInfoLen = %d.\n",
+      *GasCount,
+      Length
+      );
+    return;
+  }
+
+  // Make sure the array of address sizes corresponding to each GAS fit in the
+  // Debug Device Information structure
+  if ((*AddrSizeOffset + (*GasCount * sizeof (UINT32))) > Length) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid GAS count. GasCount = %d. RemainingBufferLength = %d. " \
+        L"Parsing of the Debug Device Information structure aborted.\n",
+      *GasCount,
+      Length - *AddrSizeOffset
+      );
+    return;
+  }
+
+  // Address Size
+  Index = 0;
+  Offset = *AddrSizeOffset;
+  while ((Index++ < *GasCount) &&
+         (Offset < Length)) {
     PrintFieldName (4, L"Address Size");
-    Print (L"0x%x\n", AddrSize[Index]);
-    DataPtr += GAS_LENGTH;
-    Index++;
+    Print (L"0x%x\n", *((UINT32*)(Ptr + Offset)));
+    Offset += sizeof (UINT32);
   }
 
   // NameSpace String
   Index = 0;
-  DataPtr = Ptr + (*NameSpaceStringOffset);
+  Offset = *NameSpaceStringOffset;
   PrintFieldName (4, L"NameSpace String");
-  while (Index < (*NameSpaceStringLength)) {
-    Print (L"%c", DataPtr[Index++]);
+  while ((Index++ < *NameSpaceStringLength) &&
+         (Offset < Length)) {
+    Print (L"%c", *(Ptr + Offset));
+    Offset++;
   }
   Print (L"\n");
+
+  // Cross-check the string length with the size of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *NameSpaceStringLength)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid NameSpaceString length. NameSpaceStringLength = %d. " \
+        L"DbgDevInfoLen = %d.\n",
+      *NameSpaceStringLength,
+      Length
+      );
+    return;
+  }
 
   // OEM Data
-  Index = 0;
-  DataPtr = Ptr + (*OEMDataOffset);
-  PrintFieldName (4, L"OEM Data");
-  while (Index < (*OEMDataLength)) {
-    Print (L"%x ", DataPtr[Index++]);
-    if ((Index & 7) == 0) {
-      Print (L"\n%-*s   ", OUTPUT_FIELD_COLUMN_WIDTH, L"");
+  if (*OEMDataOffset != 0) {
+    Index = 0;
+    Offset = *OEMDataOffset;
+    PrintFieldName (4, L"OEM Data");
+    while ((Index++ < *OEMDataLength) &&
+           (Offset < Length)) {
+      Print (L"%x ", *(Ptr + Offset));
+      if ((Index & 7) == 0) {
+        Print (L"\n%-*s   ", OUTPUT_FIELD_COLUMN_WIDTH, L"");
+      }
+      Offset++;
     }
+    Print (L"\n");
   }
-  Print (L"\n");
 
-  *Length = *DbgDevInfoLen;
+  // Cross-check the OEM data length with the size of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *OEMDataLength)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid OEM Data size. OEMDataLength = %d. " \
+        L"DbgDevInfoLen = %d.\n",
+      *OEMDataLength,
+      Length
+      );
+  }
 }
 
 /**
@@ -217,8 +268,7 @@ ParseAcpiDbg2 (
   )
 {
   UINT32 Offset;
-  UINT32 DbgDeviceInfoLength;
-  UINT8* DevInfoPtr;
+  UINT32 Index;
 
   if (!Trace) {
     return;
@@ -232,14 +282,74 @@ ParseAcpiDbg2 (
              AcpiTableLength,
              PARSER_PARAMS (Dbg2Parser)
              );
-  DevInfoPtr = Ptr + Offset;
 
-  while (Offset < AcpiTableLength) {
-    DumpDbgDeviceInfo (
-      DevInfoPtr,
-      &DbgDeviceInfoLength
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if ((OffsetDbgDeviceInfo == NULL) ||
+      (NumberDbgDeviceInfo == NULL)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient table length. AcpiTableLength = %d\n",
+      AcpiTableLength
       );
-    Offset += DbgDeviceInfoLength;
-    DevInfoPtr += DbgDeviceInfoLength;
+    return;
+  }
+
+  Offset = *OffsetDbgDeviceInfo;
+  Index = 0;
+
+  while (Index++ < *NumberDbgDeviceInfo) {
+
+    // Parse the Debug Device Information Structure header to obtain Length
+    ParseAcpi (
+      FALSE,
+      0,
+      NULL,
+      Ptr + Offset,
+      AcpiTableLength - Offset,
+      PARSER_PARAMS (DbgDevInfoHeaderParser)
+      );
+
+    // Check if the values used to control the parsing logic have been
+    // successfully read.
+    if (DbgDevInfoLen == NULL) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Insufficient remaining table buffer length to read the " \
+          L"Debug Device Information structure's 'Length' field. " \
+          L"RemainingTableBufferLength = %d.\n",
+        AcpiTableLength - Offset
+        );
+      return;
+    }
+
+    // Make sure the Debug Device Information structure lies inside the table.
+    if ((Offset + *DbgDevInfoLen) > AcpiTableLength) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Invalid Debug Device Information structure length. " \
+          L"DbgDevInfoLen = %d. RemainingTableBufferLength = %d. " \
+          L"DBG2 parsing aborted.\n",
+        *DbgDevInfoLen,
+        AcpiTableLength - Offset
+        );
+      return;
+    }
+
+    DumpDbgDeviceInfo (Ptr + Offset, (*DbgDevInfoLen));
+    Offset += (*DbgDevInfoLen);
+  }
+
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *NumberDbgDeviceInfo)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid Debug Device Information structure count. " \
+        L"NumberDbgDeviceInfo = %d. AcpiTableLength = %d.\n",
+      *NumberDbgDeviceInfo,
+      AcpiTableLength
+      );
   }
 }
