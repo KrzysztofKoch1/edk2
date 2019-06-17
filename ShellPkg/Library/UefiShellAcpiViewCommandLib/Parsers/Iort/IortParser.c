@@ -13,6 +13,7 @@
 #include <Library/UefiLib.h>
 #include "AcpiParser.h"
 #include "AcpiTableParser.h"
+#include "AcpiView.h"
 
 // Local variables
 STATIC ACPI_DESCRIPTION_HEADER_INFO AcpiHdrInfo;
@@ -45,7 +46,35 @@ EFIAPI
 ValidateItsIdMappingCount (
   IN UINT8* Ptr,
   IN VOID*  Context
-  );
+  )
+{
+  if (*(UINT32*)Ptr != 0) {
+    IncrementErrorCount ();
+    Print (L"\nERROR: IORT ID Mapping count must be zero.");
+  }
+}
+
+/**
+  This function validates the ID Mapping array count for the Performance
+  Monitoring Counter Group (PMCG) node.
+
+  @param [in] Ptr     Pointer to the start of the field data.
+  @param [in] Context Pointer to context specific information e.g. this
+                      could be a pointer to the ACPI table header.
+**/
+STATIC
+VOID
+EFIAPI
+ValidatePmcgIdMappingCount (
+  IN UINT8* Ptr,
+  IN VOID*  Context
+  )
+{
+  if (*(UINT32*)Ptr > 1) {
+    IncrementErrorCount ();
+    Print (L"\nERROR: IORT ID Mapping count must not be greater than 1.");
+  }
+}
 
 /**
   This function validates the ID Mapping array offset for the ITS node.
@@ -60,7 +89,13 @@ EFIAPI
 ValidateItsIdArrayReference (
   IN UINT8* Ptr,
   IN VOID*  Context
-  );
+  )
+{
+  if (*(UINT32*)Ptr != 0) {
+    IncrementErrorCount ();
+    Print (L"\nERROR: IORT ID Mapping offset must be zero.");
+  }
+}
 
 /**
   Helper Macro for populating the IORT Node header in the ACPI_PARSER array.
@@ -204,94 +239,64 @@ STATIC CONST ACPI_PARSER IortNodeRootComplexParser[] = {
   An ACPI_PARSER array describing the IORT PMCG node.
 **/
 STATIC CONST ACPI_PARSER IortNodePmcgParser[] = {
-  PARSE_IORT_NODE_HEADER (NULL, NULL),
+  PARSE_IORT_NODE_HEADER (ValidatePmcgIdMappingCount, NULL),
   {L"Base Address", 8, 16, L"0x%lx", NULL, NULL, NULL, NULL},
   {L"Overflow interrupt GSIV", 4, 24, L"0x%x", NULL, NULL, NULL, NULL},
   {L"Node reference", 4, 28, L"0x%x", NULL, NULL, NULL, NULL},
 };
 
 /**
-  This function validates the ID Mapping array count for the ITS node.
-
-  @param [in] Ptr     Pointer to the start of the field data.
-  @param [in] Context Pointer to context specific information e.g. this
-                      could be a pointer to the ACPI table header.
-**/
-STATIC
-VOID
-EFIAPI
-ValidateItsIdMappingCount (
-  IN UINT8* Ptr,
-  IN VOID*     Context
-  )
-{
-  if (*(UINT32*)Ptr != 0) {
-    IncrementErrorCount ();
-    Print (L"\nERROR: IORT ID Mapping count must be zero.");
-  }
-}
-
-/**
-  This function validates the ID Mapping array offset for the ITS node.
-
-  @param [in] Ptr     Pointer to the start of the field data.
-  @param [in] Context Pointer to context specific information e.g. this
-                      could be a pointer to the ACPI table header.
-**/
-STATIC
-VOID
-EFIAPI
-ValidateItsIdArrayReference (
-  IN UINT8* Ptr,
-  IN VOID*  Context
-  )
-{
-  if (*(UINT32*)Ptr != 0) {
-    IncrementErrorCount ();
-    Print (L"\nERROR: IORT ID Mapping offset must be zero.");
-  }
-}
-
-/**
   This function parses the IORT Node Id Mapping array.
 
-  @param [in] Ptr            Pointer to the start of the IORT Table.
+  @param [in] Ptr            Pointer to the start of the ID mapping array.
+  @param [in] Length         Length of the buffer.
   @param [in] MappingCount   The ID Mapping count.
-  @param [in] MappingOffset  The offset of the ID Mapping array
-                             from the start of the IORT table.
 **/
 STATIC
 VOID
 DumpIortNodeIdMappings (
   IN UINT8* Ptr,
-  IN UINT32 MappingCount,
-  IN UINT32 MappingOffset
+  IN UINT32 Length,
+  IN UINT32 MappingCount
   )
 {
-  UINT8* IdMappingPtr;
   UINT32 Index;
   UINT32 Offset;
   CHAR8  Buffer[40];  // Used for AsciiName param of ParseAcpi
 
-  IdMappingPtr = Ptr + MappingOffset;
   Index = 0;
-  while (Index < MappingCount) {
+  Offset = 0;
+
+  while ((Index < MappingCount) &&
+         (Offset < Length)) {
     AsciiSPrint (
       Buffer,
       sizeof (Buffer),
       "ID Mapping [%d]",
       Index
       );
-    Offset = ParseAcpi (
-               TRUE,
-               4,
-               Buffer,
-               IdMappingPtr,
-               20,
-               PARSER_PARAMS (IortNodeIdMappingParser)
-               );
-    IdMappingPtr += Offset;
+    Offset += ParseAcpi (
+                TRUE,
+                4,
+                Buffer,
+                Ptr + Offset,
+                Length - Offset,
+                PARSER_PARAMS (IortNodeIdMappingParser)
+                );
     Index++;
+  }
+
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < MappingCount)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid ID Mapping Count. IdMappingCount = %d. " \
+        L"IdMappingBufferSize = %d.\n",
+      MappingCount,
+      Length
+      );
   }
 }
 
@@ -317,8 +322,6 @@ DumpIortNodeSmmuV1V2 (
   UINT32 Offset;
   CHAR8  Buffer[50];  // Used for AsciiName param of ParseAcpi
 
-  UINT8* ArrayPtr;
-
   ParseAcpi (
     TRUE,
     2,
@@ -328,51 +331,97 @@ DumpIortNodeSmmuV1V2 (
     PARSER_PARAMS (IortNodeSmmuV1V2Parser)
     );
 
-  ArrayPtr = Ptr + *InterruptContextOffset;
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if ((InterruptContextCount == NULL)   ||
+      (InterruptContextOffset == NULL)  ||
+      (PmuInterruptCount == NULL)       ||
+      (PmuInterruptOffset == NULL)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient SMMUv1/2 node length. Length = %d\n",
+      Length
+      );
+    return;
+  }
+
+  Offset = *InterruptContextOffset;
   Index = 0;
-  while (Index < *InterruptContextCount) {
+
+  while ((Index < *InterruptContextCount) &&
+         (Offset < Length)) {
     AsciiSPrint (
       Buffer,
       sizeof (Buffer),
       "Context Interrupts Array [%d]",
       Index
       );
-    Offset = ParseAcpi (
-               TRUE,
-               4,
-               Buffer,
-               ArrayPtr,
-               8,
-               PARSER_PARAMS (InterruptArrayParser)
-               );
-    ArrayPtr += Offset;
+    Offset += ParseAcpi (
+                TRUE,
+                4,
+                Buffer,
+                Ptr + Offset,
+                Length - Offset,
+                PARSER_PARAMS (InterruptArrayParser)
+                );
     Index++;
   }
 
-  ArrayPtr = Ptr + *PmuInterruptOffset;
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *InterruptContextCount)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid Context Interrupt count. InterruptContextCount = %d. " \
+        L"SMMUv1v2BufferSize = %d.\n",
+      *InterruptContextCount,
+      Length
+      );
+    return;
+  }
+
+  Offset = *PmuInterruptOffset;
   Index = 0;
-  while (Index < *PmuInterruptCount) {
+
+  while ((Index < *PmuInterruptCount) &&
+         (Offset < Length)) {
     AsciiSPrint (
       Buffer,
       sizeof (Buffer),
       "PMU Interrupts Array [%d]",
       Index
       );
-    Offset = ParseAcpi (
-               TRUE,
-               4,
-               Buffer,
-               ArrayPtr,
-               8,
-               PARSER_PARAMS (InterruptArrayParser)
-               );
-    ArrayPtr += Offset;
+    Offset += ParseAcpi (
+                TRUE,
+                4,
+                Buffer,
+                Ptr + Offset,
+                Length - Offset,
+                PARSER_PARAMS (InterruptArrayParser)
+                );
     Index++;
   }
 
-  if (*IortIdMappingCount != 0) {
-    DumpIortNodeIdMappings (Ptr, MappingCount, MappingOffset);
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *PmuInterruptCount)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid PMU Interrupt count. PmuInterruptCount = %d. " \
+        L"SMMUv1v2BufferSize = %d.\n",
+      *PmuInterruptCount,
+      Length
+      );
+    return;
   }
+
+  DumpIortNodeIdMappings (
+    Ptr + MappingOffset,
+    Length - MappingOffset,
+    MappingCount
+    );
 }
 
 /**
@@ -402,9 +451,11 @@ DumpIortNodeSmmuV3 (
     PARSER_PARAMS (IortNodeSmmuV3Parser)
     );
 
-  if (*IortIdMappingCount != 0) {
-    DumpIortNodeIdMappings (Ptr, MappingCount, MappingOffset);
-  }
+  DumpIortNodeIdMappings (
+    Ptr + MappingOffset,
+    Length - MappingOffset,
+    MappingCount
+    );
 }
 
 /**
@@ -422,40 +473,64 @@ DumpIortNodeIts (
 {
   UINT32 Offset;
   UINT32 Index;
-  UINT8* ItsIdPtr;
   CHAR8  Buffer[80];  // Used for AsciiName param of ParseAcpi
 
   Offset = ParseAcpi (
-             TRUE,
-             2,
-             "ITS Node",
-             Ptr,
-             Length,
-             PARSER_PARAMS (IortNodeItsParser)
-             );
+            TRUE,
+            2,
+            "ITS Node",
+            Ptr,
+            Length,
+            PARSER_PARAMS (IortNodeItsParser)
+            );
 
-  ItsIdPtr = Ptr + Offset;
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if (ItsCount == NULL) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient ITS group length. Length = %d.\n",
+      Length
+      );
+    return;
+  }
+
   Index = 0;
-  while (Index < *ItsCount) {
+
+  while ((Index < *ItsCount) &&
+         (Offset < Length)) {
     AsciiSPrint (
       Buffer,
       sizeof (Buffer),
       "GIC ITS Identifier Array [%d]",
       Index
       );
-    Offset = ParseAcpi (
-               TRUE,
-               4,
-               Buffer,
-               ItsIdPtr,
-               4,
-               PARSER_PARAMS (ItsIdParser)
-               );
-    ItsIdPtr += Offset;
+    Offset += ParseAcpi (
+                TRUE,
+                4,
+                Buffer,
+                Ptr + Offset,
+                Length - Offset,
+                PARSER_PARAMS (ItsIdParser)
+                );
     Index++;
   }
 
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *ItsCount)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid GIC ITS identifier count. ItsCount = %d. " \
+        L"ItsGroupBufferSize = %d.\n",
+      *ItsCount,
+      Length
+      );
+  }
+
   // Note: ITS does not have the ID Mappings Array
+
 }
 
 /**
@@ -478,8 +553,6 @@ DumpIortNodeNamedComponent (
 {
   UINT32 Offset;
   UINT32 Index;
-  UINT8* DeviceNamePtr;
-  UINT32 DeviceNameLength;
 
   Offset = ParseAcpi (
              TRUE,
@@ -490,19 +563,35 @@ DumpIortNodeNamedComponent (
              PARSER_PARAMS (IortNodeNamedComponentParser)
              );
 
-  DeviceNamePtr = Ptr + Offset;
   // Estimate the Device Name length
-  DeviceNameLength = Length - Offset - (MappingCount * 20);
   PrintFieldName (2, L"Device Object Name");
   Index = 0;
-  while ((Index < DeviceNameLength) && (DeviceNamePtr[Index] != 0)) {
-    Print (L"%c", DeviceNamePtr[Index++]);
+
+  while ((*(Ptr + Offset) != 0) &&
+         (Offset < Length)) {
+    Print (L"%c", *(Ptr + Offset));
+    Offset++;
   }
   Print (L"\n");
 
-  if (*IortIdMappingCount != 0) {
-    DumpIortNodeIdMappings (Ptr, MappingCount, MappingOffset);
+  // Cross-check the string length with the size of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (*(Ptr + Offset) != '\0')) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid Device object name string. " \
+        L"NamedComponentBufferSize = %d.\n",
+      Length
+      );
+    return;
   }
+
+  DumpIortNodeIdMappings (
+    Ptr + MappingOffset,
+    Length - MappingOffset,
+    MappingCount
+    );
 }
 
 /**
@@ -532,9 +621,11 @@ DumpIortNodeRootComplex (
     PARSER_PARAMS (IortNodeRootComplexParser)
     );
 
-  if (*IortIdMappingCount != 0) {
-    DumpIortNodeIdMappings (Ptr, MappingCount, MappingOffset);
-  }
+  DumpIortNodeIdMappings (
+    Ptr + MappingOffset,
+    Length - MappingOffset,
+    MappingCount
+    );
 }
 
 /**
@@ -562,19 +653,13 @@ DumpIortNodePmcg (
     Ptr,
     Length,
     PARSER_PARAMS (IortNodePmcgParser)
-  );
+    );
 
-  if (*IortIdMappingCount != 0) {
-    DumpIortNodeIdMappings (Ptr, MappingCount, MappingOffset);
-  }
-
-  if (*IortIdMappingCount > 1) {
-    IncrementErrorCount ();
-    Print (
-      L"ERROR: ID mapping must not be greater than 1. Id Mapping Count =%d\n",
-      *IortIdMappingCount
-      );
-  }
+  DumpIortNodeIdMappings (
+    Ptr + MappingOffset,
+    Length - MappingOffset,
+    MappingCount
+    );
 }
 
 /**
@@ -621,23 +706,61 @@ ParseAcpiIort (
     AcpiTableLength,
     PARSER_PARAMS (IortParser)
     );
+
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if ((IortNodeCount == NULL) ||
+      (IortNodeOffset == NULL)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient table length. AcpiTableLength = %d.\n",
+      AcpiTableLength
+      );
+    return;
+  }
+
   Offset = *IortNodeOffset;
   NodePtr = Ptr + Offset;
   Index = 0;
 
-  while ((Index < *IortNodeCount) && (Offset < AcpiTableLength)) {
+  // Parse the specified number of IORT nodes or the IORT table buffer length.
+  // Whichever is minimum.
+  while ((Index++ < *IortNodeCount) &&
+         (Offset < AcpiTableLength)) {
     // Parse the IORT Node Header
     ParseAcpi (
       FALSE,
       0,
       "IORT Node Header",
       NodePtr,
-      16,
+      AcpiTableLength - Offset,
       PARSER_PARAMS (IortNodeHeaderParser)
       );
-    if (*IortNodeLength == 0) {
+
+    // Check if the values used to control the parsing logic have been
+    // successfully read.
+    if ((IortNodeType == NULL)        ||
+        (IortNodeLength == NULL)      ||
+        (IortIdMappingCount == NULL)  ||
+        (IortIdMappingOffset == NULL)) {
       IncrementErrorCount ();
-      Print (L"ERROR: Parser error. Invalid table data.\n");
+      Print (
+        L"ERROR: Insufficient remaining table buffer length to read the " \
+          L"IORT node header. Length = %d.\n",
+        AcpiTableLength - Offset
+        );
+      return;
+    }
+
+    // Make sure the IORT Node is inside the table
+    if ((Offset + (*IortNodeLength)) > AcpiTableLength) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Invalid IORT node length. IortNodeLength = %d. " \
+          L"RemainingTableBufferLength = %d. IORT parsing aborted.\n",
+        *IortNodeLength,
+        AcpiTableLength - Offset
+        );
       return;
     }
 
@@ -689,15 +812,31 @@ ParseAcpiIort (
           *IortNodeLength,
           *IortIdMappingCount,
           *IortIdMappingOffset
-        );
+          );
         break;
 
       default:
-        IncrementErrorCount ();
-        Print (L"ERROR: Unsupported IORT Node type = %d\n", *IortNodeType);
+        if (GetConsistencyChecking ()) {
+          IncrementErrorCount ();
+          Print (L"ERROR: Unsupported IORT Node type = %d\n", *IortNodeType);
+        }
+        break;
     } // switch
 
     NodePtr += (*IortNodeLength);
     Offset += (*IortNodeLength);
   } // while
+
+  // Cross-check the substructure count with the length of the encapsulating
+  // buffer
+  if (GetConsistencyChecking () &&
+      (Index < *IortNodeCount)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Invalid IORT node count. IortNodeCount = %d. " \
+        L"AcpiTableLength = %d.\n",
+      *IortNodeCount,
+      AcpiTableLength
+      );
+  }
 }
