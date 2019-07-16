@@ -203,6 +203,20 @@ ParseAcpiFadt (
     PARSER_PARAMS (FadtParser)
     );
 
+  // Check if the values used to control the parsing logic have been
+  // successfully read.
+  if ((DsdtAddress == NULL)       ||
+      (FadtMinorRevision == NULL) ||
+      (X_DsdtAddress == NULL)) {
+    IncrementErrorCount ();
+    Print (
+      L"ERROR: Insufficient table length. AcpiTableLength = %d. " \
+        L"FADT parsing aborted.\n",
+      AcpiTableLength
+      );
+    return;
+  }
+
   if (Trace) {
     Print (L"\nSummary:\n");
     PrintFieldName (2, L"FADT Version");
