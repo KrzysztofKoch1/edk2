@@ -6,6 +6,8 @@
 **/
 
 #include <Uefi.h>
+#include <Library/DebugLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include "AcpiParser.h"
@@ -464,6 +466,267 @@ PrintFieldName (
     (OUTPUT_FIELD_COLUMN_WIDTH - gIndent - Indent),
     FieldName
     );
+}
+
+/**
+  Produce a Null-terminated ASCII string with the name and index of an
+  ACPI structure.
+
+  The output string is in the following format: <Name> [<Index>]
+
+  @param [in]  Name           Structure name.
+  @param [in]  Index          Structure index.
+  @param [in]  BufferSize     The size, in bytes, of the output buffer.
+  @param [out] Buffer         Buffer for the output string.
+
+  @return   The number of bytes written to the buffer (not including Null-byte)
+**/
+UINTN
+EFIAPI
+PrintAcpiStructName (
+  IN  CONST CHAR8*  Name,
+  IN        UINT32  Index,
+  IN        UINTN   BufferSize,
+  OUT       CHAR8*  Buffer
+  )
+{
+  ASSERT (Name != NULL);
+  ASSERT (Buffer != NULL);
+
+  return AsciiSPrint (Buffer, BufferSize, "%a [%d]", Name , Index);
+}
+
+/**
+  Set all ACPI structure instance counts to 0.
+
+  @param [in,out] StructDb     ACPI structure database with counts to reset.
+**/
+VOID
+EFIAPI
+ResetAcpiStructCounts (
+  IN OUT ACPI_STRUCT_DATABASE* StructDb
+  )
+{
+  UINT32 Type;
+
+  ASSERT (StructDb != NULL);
+  ASSERT (StructDb->Entries != NULL);
+
+  for (Type = 0; Type < StructDb->EntryCount; Type++) {
+    StructDb->Entries[Type].Count = 0;
+  }
+}
+
+/**
+  Sum all ACPI structure instance counts.
+
+  @param [in] StructDb     ACPI structure database with per-type counts to sum.
+
+  @return   Total number of structure instances recorded in the database.
+**/
+UINT32
+EFIAPI
+SumAcpiStructCounts (
+  IN  CONST ACPI_STRUCT_DATABASE* StructDb
+  )
+{
+  UINT32 Type;
+  UINT32 Total;
+
+  ASSERT (StructDb != NULL);
+  ASSERT (StructDb->Entries != NULL);
+
+  Total = 0;
+
+  for (Type = 0; Type < StructDb->EntryCount; Type++) {
+    Total += StructDb->Entries[Type].Count;
+  }
+
+  return Total;
+}
+
+/**
+  Validate that a structure with a given type value is defined for the given
+  ACPI table and target architecture.
+
+  The target architecture is evaluated from the firmare build parameters.
+
+  @param [in] Type        ACPI-defined structure type.
+  @param [in] StructDb    ACPI structure database with architecture
+                          compatibility info.
+
+  @retval TRUE    Structure is valid.
+  @retval FALSE   Structure is not valid.
+**/
+BOOLEAN
+EFIAPI
+IsAcpiStructTypeValid (
+  IN        UINT32                Type,
+  IN  CONST ACPI_STRUCT_DATABASE* StructDb
+  )
+{
+  UINT32 Compatible;
+
+  ASSERT (StructDb != NULL);
+  ASSERT (StructDb->Entries != NULL);
+
+  if (Type >= StructDb->EntryCount) {
+    return FALSE;
+  }
+
+#if defined (MDE_CPU_ARM) || defined (MDE_CPU_AARCH64)
+  Compatible = StructDb->Entries[Type].CompatArch &
+               (ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64);
+#else
+  Compatible = StructDb->Entries[Type].CompatArch;
+#endif
+
+  return (Compatible != 0);
+}
+
+/**
+  Print the instance count of each structure in an ACPI table that is
+  compatible with the target architecture.
+
+  For structures which are not allowed for the target architecture,
+  validate that their instance counts are 0.
+
+  @param [in] StructDb     ACPI structure database with counts to validate.
+
+  @retval TRUE    All structures are compatible.
+  @retval FALSE   One or more incompatible structures present.
+**/
+BOOLEAN
+EFIAPI
+ValidateAcpiStructCounts (
+  IN  CONST ACPI_STRUCT_DATABASE* StructDb
+  )
+{
+  BOOLEAN   AllValid;
+  UINT32    Type;
+
+  ASSERT (StructDb != NULL);
+  ASSERT (StructDb->Entries != NULL);
+
+  AllValid = TRUE;
+  Print (L"\nTable Breakdown:\n");
+
+  for (Type = 0; Type < StructDb->EntryCount; Type++) {
+    ASSERT (Type == StructDb->Entries[Type].Type);
+
+    if (IsAcpiStructTypeValid (Type, StructDb)) {
+      Print (
+        L"%*a%-*a : %d\n",
+        INSTANCE_COUNT_INDENT,
+        "",
+        OUTPUT_FIELD_COLUMN_WIDTH - INSTANCE_COUNT_INDENT,
+        StructDb->Entries[Type].Name,
+        StructDb->Entries[Type].Count
+        );
+    } else if (StructDb->Entries[Type].Count > 0) {
+      AllValid = FALSE;
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: %a Structure is not valid for the target architecture " \
+          L"(found %d)\n",
+        StructDb->Entries[Type].Name,
+        StructDb->Entries[Type].Count
+        );
+    }
+  }
+
+  return AllValid;
+}
+
+/**
+  Parse the ACPI structure with the type value given according to instructions
+  defined in the ACPI structure database.
+
+  If the input structure type is defined in the database, increment structure's
+  instance count.
+
+  If ACPI_PARSER array is used to parse the input structure, the index of the
+  structure (instance count for the type before update) gets printed alongside
+  the structure name. This helps debugging if there are many instances of the
+  type in a table. For ACPI_STRUCT_PARSER_FUNC, the printing of the index must
+  be implemented separately.
+
+  @param [in]     Indent    Number of spaces to indent the output.
+  @param [in]     Ptr       Ptr to the start of the structure.
+  @param [in,out] StructDb  ACPI structure database with instructions on how
+                            parse every structure type.
+  @param [in]     Offset    Structure offset from the start of the table.
+  @param [in]     Type      ACPI-defined structure type.
+  @param [in]     Length    Length of the structure in bytes.
+  @param [in]     OptArg0   First optional argument to pass to parser function.
+  @param [in]     OptArg1   Second optional argument to pass to parser function.
+
+  @retval TRUE    ACPI structure parsed successfully.
+  @retval FALSE   Undefined structure type or insufficient data to parse.
+**/
+BOOLEAN
+EFIAPI
+ParseAcpiStruct (
+  IN            UINT32                 Indent,
+  IN            UINT8*                 Ptr,
+  IN OUT        ACPI_STRUCT_DATABASE*  StructDb,
+  IN            UINT32                 Offset,
+  IN            UINT32                 Type,
+  IN            UINT32                 Length,
+  IN      CONST VOID*                  OptArg0 OPTIONAL,
+  IN      CONST VOID*                  OptArg1 OPTIONAL
+  )
+{
+  ACPI_STRUCT_PARSER_FUNC ParserFunc;
+  CHAR8                   Buffer[80];
+
+  ASSERT (Ptr != NULL);
+  ASSERT (StructDb != NULL);
+  ASSERT (StructDb->Entries != NULL);
+  ASSERT (StructDb->Name != NULL);
+
+  PrintFieldName (Indent, L"* Offset *");
+  Print (L"0x%x\n", Offset);
+
+  if (Type >= StructDb->EntryCount) {
+    IncrementErrorCount ();
+    Print (L"ERROR: Unknown %a. Type = %d\n", StructDb->Name, Type);
+    return FALSE;
+  }
+
+  if (StructDb->Entries[Type].Handler.ParserFunc != NULL) {
+    ParserFunc = StructDb->Entries[Type].Handler.ParserFunc;
+    ParserFunc (Ptr, Length, OptArg0, OptArg1);
+  } else if (StructDb->Entries[Type].Handler.ParserArray != NULL) {
+    ASSERT (StructDb->Entries[Type].Handler.Elements != 0);
+
+    PrintAcpiStructName (
+      StructDb->Entries[Type].Name,
+      StructDb->Entries[Type].Count,
+      sizeof (Buffer),
+      Buffer
+      );
+
+    ParseAcpi (
+      TRUE,
+      Indent,
+      Buffer,
+      Ptr,
+      Length,
+      StructDb->Entries[Type].Handler.ParserArray,
+      StructDb->Entries[Type].Handler.Elements
+      );
+  } else {
+    StructDb->Entries[Type].Count++;
+    Print (
+      L"ERROR: Parsing of %a Structure is not implemented\n",
+      StructDb->Entries[Type].Name
+      );
+    return FALSE;
+  }
+
+  StructDb->Entries[Type].Count++;
+  return TRUE;
 }
 
 /**
