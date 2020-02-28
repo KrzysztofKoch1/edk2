@@ -1,13 +1,14 @@
 /** @file
   Header file for MADT table parser
 
-  Copyright (c) 2019, ARM Limited. All rights reserved.
+  Copyright (c) 2020, ARM Limited. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
   @par Reference(s):
     - Arm Generic Interrupt Controller Architecture Specification,
       GIC architecture version 3 and version 4, issue E
     - Arm Server Base System Architecture 5.0
+    - ACPI 6.3 Specification - January 2019, Section 5.2.12
 **/
 
 #ifndef MADT_PARSER_H_

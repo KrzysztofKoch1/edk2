@@ -15,6 +15,7 @@
 #include <Library/UefiLib.h>
 #include "AcpiParser.h"
 #include "AcpiTableParser.h"
+#include "AcpiView.h"
 #include "MadtParser.h"
 
 // Local Variables
@@ -201,6 +202,106 @@ STATIC CONST ACPI_PARSER MadtInterruptControllerHeaderParser[] = {
 };
 
 /**
+  Information about each Interrupt Controller Structure type.
+**/
+STATIC ACPI_STRUCT_INFO MadtStructs[] = {
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Processor Local APIC",
+    EFI_ACPI_6_3_PROCESSOR_LOCAL_APIC,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "I/O APIC",
+    EFI_ACPI_6_3_IO_APIC,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Interrupt Source Override",
+    EFI_ACPI_6_3_INTERRUPT_SOURCE_OVERRIDE,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "NMI Source",
+    EFI_ACPI_6_3_NON_MASKABLE_INTERRUPT_SOURCE,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Local APIC NMI",
+    EFI_ACPI_6_3_LOCAL_APIC_NMI,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Local APIC Address Override",
+    EFI_ACPI_6_3_LOCAL_APIC_ADDRESS_OVERRIDE,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "I/O SAPIC",
+    EFI_ACPI_6_3_IO_SAPIC,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Local SAPIC",
+    EFI_ACPI_6_3_LOCAL_SAPIC,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Platform Interrupt Sources",
+    EFI_ACPI_6_3_PLATFORM_INTERRUPT_SOURCES,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Processor Local x2APIC",
+    EFI_ACPI_6_3_PROCESSOR_LOCAL_X2APIC,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ACPI_STRUCT_INFO_PARSER_NOT_IMPLEMENTED (
+    "Local x2APIC NMI",
+    EFI_ACPI_6_3_LOCAL_X2APIC_NMI,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GICC",
+    EFI_ACPI_6_3_GIC,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    GicCParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GICD",
+    EFI_ACPI_6_3_GICD,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    GicDParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GIC MSI Frame",
+    EFI_ACPI_6_3_GIC_MSI_FRAME,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    GicMSIFrameParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GICR",
+    EFI_ACPI_6_3_GICR,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    GicRParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GIC ITS",
+    EFI_ACPI_6_3_GIC_ITS,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    GicITSParser
+    )
+};
+
+/**
+  MADT structure database
+**/
+STATIC ACPI_STRUCT_DATABASE MadtDatabase = {
+  "Interrupt Controller Structure",
+  MadtStructs,
+  ARRAY_SIZE (MadtStructs)
+};
+
+/**
   This function parses the ACPI MADT table.
   When trace is enabled this function parses the MADT table and
   traces the ACPI table fields.
@@ -231,13 +332,12 @@ ParseAcpiMadt (
 {
   UINT32 Offset;
   UINT8* InterruptContollerPtr;
-  UINT32 GICDCount;
-
-  GICDCount = 0;
 
   if (!Trace) {
     return;
   }
+
+  ResetAcpiStructCounts (&MadtDatabase);
 
   Offset = ParseAcpi (
              TRUE,
@@ -267,7 +367,8 @@ ParseAcpiMadt (
       IncrementErrorCount ();
       Print (
         L"ERROR: Insufficient remaining table buffer length to read the " \
-          L"Interrupt Controller Structure header. Length = %d.\n",
+          L"%a header. Length = %d.\n",
+        MadtDatabase.Name,
         AcpiTableLength - Offset
         );
       return;
@@ -278,8 +379,9 @@ ParseAcpiMadt (
         ((Offset + (*MadtInterruptControllerLength)) > AcpiTableLength)) {
       IncrementErrorCount ();
       Print (
-        L"ERROR: Invalid Interrupt Controller Structure length. " \
-          L"Length = %d. Offset = %d. AcpiTableLength = %d.\n",
+        L"ERROR: Invalid %a length. Length = %d. Offset = %d. " \
+          "AcpiTableLength = %d.\n",
+        MadtDatabase.Name,
         *MadtInterruptControllerLength,
         Offset,
         AcpiTableLength
@@ -287,87 +389,32 @@ ParseAcpiMadt (
       return;
     }
 
-    switch (*MadtInterruptControllerType) {
-      case EFI_ACPI_6_3_GIC: {
-        ParseAcpi (
-          TRUE,
-          2,
-          "GICC",
-          InterruptContollerPtr,
-          *MadtInterruptControllerLength,
-          PARSER_PARAMS (GicCParser)
-          );
-        break;
-      }
-
-      case EFI_ACPI_6_3_GICD: {
-        if (++GICDCount > 1) {
-          IncrementErrorCount ();
-          Print (
-            L"ERROR: Only one GICD must be present,"
-              L" GICDCount = %d\n",
-            GICDCount
-            );
-        }
-        ParseAcpi (
-          TRUE,
-          2,
-          "GICD",
-          InterruptContollerPtr,
-          *MadtInterruptControllerLength,
-          PARSER_PARAMS (GicDParser)
-          );
-        break;
-      }
-
-      case EFI_ACPI_6_3_GIC_MSI_FRAME: {
-        ParseAcpi (
-          TRUE,
-          2,
-          "GIC MSI Frame",
-          InterruptContollerPtr,
-          *MadtInterruptControllerLength,
-          PARSER_PARAMS (GicMSIFrameParser)
-          );
-        break;
-      }
-
-      case EFI_ACPI_6_3_GICR: {
-        ParseAcpi (
-          TRUE,
-          2,
-          "GICR",
-          InterruptContollerPtr,
-          *MadtInterruptControllerLength,
-          PARSER_PARAMS (GicRParser)
-          );
-        break;
-      }
-
-      case EFI_ACPI_6_3_GIC_ITS: {
-        ParseAcpi (
-          TRUE,
-          2,
-          "GIC ITS",
-          InterruptContollerPtr,
-          *MadtInterruptControllerLength,
-          PARSER_PARAMS (GicITSParser)
-          );
-        break;
-      }
-
-      default: {
-        IncrementErrorCount ();
-        Print (
-          L"ERROR: Unknown Interrupt Controller Structure,"
-            L" Type = %d, Length = %d\n",
-          *MadtInterruptControllerType,
-          *MadtInterruptControllerLength
-          );
-      }
-    } // switch
+    // Parse the Interrupt Controller Structure
+    ParseAcpiStruct (
+      2,
+      InterruptContollerPtr,
+      &MadtDatabase,
+      Offset,
+      *MadtInterruptControllerType,
+      *MadtInterruptControllerLength,
+      NULL,
+      NULL
+      );
 
     InterruptContollerPtr += *MadtInterruptControllerLength;
     Offset += *MadtInterruptControllerLength;
   } // while
+
+  // Report and validate Interrupt Controller Structure counts
+  if (GetConsistencyChecking ()) {
+    ValidateAcpiStructCounts (&MadtDatabase);
+
+    if (MadtStructs[EFI_ACPI_6_3_GICD].Count > 1) {
+      IncrementErrorCount ();
+      Print (
+        L"ERROR: Only one %a must be present\n",
+        MadtStructs[EFI_ACPI_6_3_GICD].Name
+        );
+    }
+  }
 }
