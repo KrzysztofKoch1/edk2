@@ -13,6 +13,7 @@
 #include <Library/UefiLib.h>
 #include "AcpiParser.h"
 #include "AcpiTableParser.h"
+#include "AcpiView.h"
 
 // Local Variables
 STATIC CONST UINT8* SratRAType;
@@ -331,6 +332,57 @@ STATIC CONST ACPI_PARSER SratX2ApciAffinityParser[] = {
 };
 
 /**
+  Information about each Static Resource Allocation Structure type.
+**/
+STATIC ACPI_STRUCT_INFO SratStructs[] = {
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "Processor Local APIC/SAPIC Affinity",
+    EFI_ACPI_6_3_PROCESSOR_LOCAL_APIC_SAPIC_AFFINITY,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64,
+    SratApciSapicAffinityParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "Memory Affinity",
+    EFI_ACPI_6_3_MEMORY_AFFINITY,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64 | ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    SratMemAffinityParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "Processor Local x2APIC Affinity",
+    EFI_ACPI_6_3_PROCESSOR_LOCAL_X2APIC_AFFINITY,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64,
+    SratX2ApciAffinityParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GICC Affinity Structure",
+    EFI_ACPI_6_3_GICC_AFFINITY,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    SratGicCAffinityParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "GIC ITS Affinity",
+    EFI_ACPI_6_3_GIC_ITS_AFFINITY,
+    ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    SratGicITSAffinityParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "Generic Initiator Affinity",
+    EFI_ACPI_6_3_GENERIC_INITIATOR_AFFINITY,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64 | ARCH_COMPAT_ARM |ARCH_COMPAT_AARCH64,
+    SratGenericInitiatorAffinityParser
+    )
+};
+
+/**
+  SRAT structure database
+**/
+STATIC ACPI_STRUCT_DATABASE SratDatabase = {
+  "Static Resource Allocation Structure",
+  SratStructs,
+  ARRAY_SIZE (SratStructs)
+};
+
+/**
   This function parses the ACPI SRAT table.
   When trace is enabled this function parses the SRAT table and
   traces the ACPI table fields.
@@ -357,26 +409,14 @@ ParseAcpiSrat (
   IN UINT8   AcpiTableRevision
   )
 {
-  UINT32 Offset;
-  UINT8* ResourcePtr;
-  UINT32 GicCAffinityIndex;
-  UINT32 GicITSAffinityIndex;
-  UINT32 GenericInitiatorAffinityIndex;
-  UINT32 MemoryAffinityIndex;
-  UINT32 ApicSapicAffinityIndex;
-  UINT32 X2ApicAffinityIndex;
-  CHAR8  Buffer[80];  // Used for AsciiName param of ParseAcpi
-
-  GicCAffinityIndex = 0;
-  GicITSAffinityIndex = 0;
-  GenericInitiatorAffinityIndex = 0;
-  MemoryAffinityIndex = 0;
-  ApicSapicAffinityIndex = 0;
-  X2ApicAffinityIndex = 0;
+  UINT32                      Offset;
+  UINT8*                      ResourcePtr;
 
   if (!Trace) {
     return;
   }
+
+  ResetAcpiStructCounts (&SratDatabase);
 
   Offset = ParseAcpi (
              TRUE,
@@ -406,7 +446,8 @@ ParseAcpiSrat (
       IncrementErrorCount ();
       Print (
         L"ERROR: Insufficient remaining table buffer length to read the " \
-          L"Static Resource Allocation structure header. Length = %d.\n",
+          L"%a header. Length = %d.\n",
+        SratDatabase.Name,
         AcpiTableLength - Offset
         );
       return;
@@ -417,8 +458,9 @@ ParseAcpiSrat (
         ((Offset + (*SratRALength)) > AcpiTableLength)) {
       IncrementErrorCount ();
       Print (
-        L"ERROR: Invalid Static Resource Allocation Structure length. " \
-          L"Length = %d. Offset = %d. AcpiTableLength = %d.\n",
+        L"ERROR: Invalid %a length. Length = %d. Offset = %d. " \
+          L"AcpiTableLength = %d.\n",
+        SratDatabase.Name,
         *SratRALength,
         Offset,
         AcpiTableLength
@@ -426,116 +468,24 @@ ParseAcpiSrat (
       return;
     }
 
-    switch (*SratRAType) {
-      case EFI_ACPI_6_3_GICC_AFFINITY:
-        AsciiSPrint (
-          Buffer,
-          sizeof (Buffer),
-          "GICC Affinity Structure [%d]",
-          GicCAffinityIndex++
-          );
-        ParseAcpi (
-          TRUE,
-          2,
-          Buffer,
-          ResourcePtr,
-          *SratRALength,
-          PARSER_PARAMS (SratGicCAffinityParser)
-          );
-        break;
-
-      case EFI_ACPI_6_3_GIC_ITS_AFFINITY:
-        AsciiSPrint (
-          Buffer,
-          sizeof (Buffer),
-          "GIC ITS Affinity Structure [%d]",
-          GicITSAffinityIndex++
-        );
-        ParseAcpi (
-          TRUE,
-          2,
-          Buffer,
-          ResourcePtr,
-          *SratRALength,
-          PARSER_PARAMS (SratGicITSAffinityParser)
-          );
-        break;
-
-      case EFI_ACPI_6_3_GENERIC_INITIATOR_AFFINITY:
-        AsciiSPrint (
-          Buffer,
-          sizeof (Buffer),
-          "Generic Initiator Affinity Structure [%d]",
-          GenericInitiatorAffinityIndex++
-        );
-        ParseAcpi (
-          TRUE,
-          2,
-          Buffer,
-          ResourcePtr,
-          *SratRALength,
-          PARSER_PARAMS (SratGenericInitiatorAffinityParser)
-        );
-        break;
-
-      case EFI_ACPI_6_3_MEMORY_AFFINITY:
-        AsciiSPrint (
-          Buffer,
-          sizeof (Buffer),
-          "Memory Affinity Structure [%d]",
-          MemoryAffinityIndex++
-          );
-        ParseAcpi (
-          TRUE,
-          2,
-          Buffer,
-          ResourcePtr,
-          *SratRALength,
-          PARSER_PARAMS (SratMemAffinityParser)
-          );
-        break;
-
-      case EFI_ACPI_6_3_PROCESSOR_LOCAL_APIC_SAPIC_AFFINITY:
-        AsciiSPrint (
-          Buffer,
-          sizeof (Buffer),
-          "APIC/SAPIC Affinity Structure [%d]",
-          ApicSapicAffinityIndex++
-          );
-        ParseAcpi (
-          TRUE,
-          2,
-          Buffer,
-          ResourcePtr,
-          *SratRALength,
-          PARSER_PARAMS (SratApciSapicAffinityParser)
-          );
-        break;
-
-      case EFI_ACPI_6_3_PROCESSOR_LOCAL_X2APIC_AFFINITY:
-        AsciiSPrint (
-          Buffer,
-          sizeof (Buffer),
-          "X2APIC Affinity Structure [%d]",
-          X2ApicAffinityIndex++
-          );
-        ParseAcpi (
-          TRUE,
-          2,
-          Buffer,
-          ResourcePtr,
-          *SratRALength,
-          PARSER_PARAMS (SratX2ApciAffinityParser)
-          );
-        break;
-
-      default:
-        IncrementErrorCount ();
-        Print (L"ERROR: Unknown SRAT Affinity type = 0x%x\n", *SratRAType);
-        break;
-    }
+    // Parse the Static Resource Allocation Structure
+    ParseAcpiStruct (
+      2,
+      ResourcePtr,
+      &SratDatabase,
+      Offset,
+      *SratRAType,
+      *SratRALength,
+      NULL,
+      NULL
+      );
 
     ResourcePtr += (*SratRALength);
     Offset += (*SratRALength);
+  }
+
+  // Report and validate Static Resource Allocation Structure counts
+  if (GetConsistencyChecking ()) {
+    ValidateAcpiStructCounts (&SratDatabase);
   }
 }
