@@ -1,7 +1,7 @@
 /** @file
   Header file for PPTT parser
 
-  Copyright (c) 2019, ARM Limited. All rights reserved.
+  Copyright (c) 2019 - 2020, ARM Limited. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
   @par Reference(s):

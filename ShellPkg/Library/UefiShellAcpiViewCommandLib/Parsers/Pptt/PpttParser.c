@@ -22,6 +22,11 @@ STATIC CONST UINT32* NumberOfPrivateResources;
 STATIC ACPI_DESCRIPTION_HEADER_INFO AcpiHdrInfo;
 
 /**
+  Handler for each Processor Topology Structure
+**/
+STATIC ACPI_STRUCT_INFO PpttStructs[];
+
+/**
   This function validates the Cache Type Structure (Type 1) 'Number of sets'
   field.
 
@@ -243,22 +248,34 @@ STATIC CONST ACPI_PARSER IdStructureParser[] = {
   @param [in] Ptr     Pointer to the start of the Processor Hierarchy Node
                       Structure data.
   @param [in] Length  Length of the Processor Hierarchy Node Structure.
+  @param [in] OptArg0 First optional argument (Not used).
+  @param [in] OptArg1 Second optional argument (Not used).
 **/
 STATIC
 VOID
 DumpProcessorHierarchyNodeStructure (
-  IN UINT8* Ptr,
-  IN UINT8  Length
+  IN       UINT8* Ptr,
+  IN       UINT32 Length,
+  IN CONST VOID*  OptArg0 OPTIONAL,
+  IN CONST VOID*  OptArg1 OPTIONAL
   )
 {
   UINT32 Offset;
   UINT32 Index;
   CHAR16 Buffer[OUTPUT_FIELD_COLUMN_WIDTH];
+  CHAR8  AsciiBuffer[80];
+
+  PrintAcpiStructName (
+    PpttStructs[EFI_ACPI_6_3_PPTT_TYPE_PROCESSOR].Name,
+    PpttStructs[EFI_ACPI_6_3_PPTT_TYPE_PROCESSOR].Count,
+    sizeof (AsciiBuffer),
+    AsciiBuffer
+    );
 
   Offset = ParseAcpi (
              TRUE,
              2,
-             "Processor Hierarchy Node Structure",
+             AsciiBuffer,
              Ptr,
              Length,
              PARSER_PARAMS (ProcessorHierarchyNodeStructureParser)
@@ -269,7 +286,8 @@ DumpProcessorHierarchyNodeStructure (
   if (NumberOfPrivateResources == NULL) {
     IncrementErrorCount ();
     Print (
-      L"ERROR: Insufficient Processor Hierarchy Node length. Length = %d.\n",
+      L"ERROR: Insufficient %a Structure length. Length = %d.\n",
+      PpttStructs[EFI_ACPI_6_3_PPTT_TYPE_PROCESSOR].Name,
       Length
       );
     return;
@@ -296,7 +314,7 @@ DumpProcessorHierarchyNodeStructure (
     UnicodeSPrint (
       Buffer,
       sizeof (Buffer),
-      L"Private resources [%d]",
+      L"Private resource [%d]",
       Index
       );
 
@@ -312,50 +330,37 @@ DumpProcessorHierarchyNodeStructure (
 }
 
 /**
-  This function parses the Cache Type Structure (Type 1).
-
-  @param [in] Ptr     Pointer to the start of the Cache Type Structure data.
-  @param [in] Length  Length of the Cache Type Structure.
+  Information about each Processor Topology Structure type.
 **/
-STATIC
-VOID
-DumpCacheTypeStructure (
-  IN UINT8* Ptr,
-  IN UINT8  Length
-  )
-{
-  ParseAcpi (
-    TRUE,
-    2,
-    "Cache Type Structure",
-    Ptr,
-    Length,
-    PARSER_PARAMS (CacheTypeStructureParser)
-    );
-}
+STATIC ACPI_STRUCT_INFO PpttStructs[] = {
+  ADD_ACPI_STRUCT_INFO_FUNC (
+    "Processor",
+    EFI_ACPI_6_3_PPTT_TYPE_PROCESSOR,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64 | ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    DumpProcessorHierarchyNodeStructure
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "Cache",
+    EFI_ACPI_6_3_PPTT_TYPE_CACHE,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64 | ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    CacheTypeStructureParser
+    ),
+  ADD_ACPI_STRUCT_INFO_ARRAY (
+    "ID",
+    EFI_ACPI_6_3_PPTT_TYPE_ID,
+    ARCH_COMPAT_IA32 | ARCH_COMPAT_X64 | ARCH_COMPAT_ARM | ARCH_COMPAT_AARCH64,
+    IdStructureParser
+    )
+};
 
 /**
-  This function parses the ID Structure (Type 2).
-
-  @param [in] Ptr     Pointer to the start of the ID Structure data.
-  @param [in] Length  Length of the ID Structure.
+  PPTT structure database
 **/
-STATIC
-VOID
-DumpIDStructure (
-  IN UINT8* Ptr,
-  IN UINT8 Length
-  )
-{
-  ParseAcpi (
-    TRUE,
-    2,
-    "ID Structure",
-    Ptr,
-    Length,
-    PARSER_PARAMS (IdStructureParser)
-    );
-}
+STATIC ACPI_STRUCT_DATABASE PpttDatabase = {
+  "Processor Topology Structure",
+  PpttStructs,
+  ARRAY_SIZE (PpttStructs)
+};
 
 /**
   This function parses the ACPI PPTT table.
@@ -390,6 +395,8 @@ ParseAcpiPptt (
     return;
   }
 
+  ResetAcpiStructCounts (&PpttDatabase);
+
   Offset = ParseAcpi (
              TRUE,
              0,
@@ -419,7 +426,8 @@ ParseAcpiPptt (
       IncrementErrorCount ();
       Print (
         L"ERROR: Insufficient remaining table buffer length to read the " \
-          L"processor topology structure header. Length = %d.\n",
+          L"%a header. Length = %d.\n",
+        PpttDatabase.Name,
         AcpiTableLength - Offset
         );
       return;
@@ -430,8 +438,9 @@ ParseAcpiPptt (
         ((Offset + (*ProcessorTopologyStructureLength)) > AcpiTableLength)) {
       IncrementErrorCount ();
       Print (
-        L"ERROR: Invalid Processor Topology Structure length. " \
-          L"Length = %d. Offset = %d. AcpiTableLength = %d.\n",
+        L"ERROR: Invalid %a length. Length = %d. Offset = %d. " \
+          L"AcpiTableLength = %d.\n",
+        PpttDatabase.Name,
         *ProcessorTopologyStructureLength,
         Offset,
         AcpiTableLength
@@ -439,39 +448,24 @@ ParseAcpiPptt (
       return;
     }
 
-    PrintFieldName (2, L"* Structure Offset *");
-    Print (L"0x%x\n", Offset);
-
-    switch (*ProcessorTopologyStructureType) {
-      case EFI_ACPI_6_2_PPTT_TYPE_PROCESSOR:
-        DumpProcessorHierarchyNodeStructure (
-          ProcessorTopologyStructurePtr,
-          *ProcessorTopologyStructureLength
-          );
-        break;
-      case EFI_ACPI_6_2_PPTT_TYPE_CACHE:
-        DumpCacheTypeStructure (
-          ProcessorTopologyStructurePtr,
-          *ProcessorTopologyStructureLength
-          );
-        break;
-      case EFI_ACPI_6_2_PPTT_TYPE_ID:
-        DumpIDStructure (
-          ProcessorTopologyStructurePtr,
-          *ProcessorTopologyStructureLength
-          );
-        break;
-      default:
-        IncrementErrorCount ();
-        Print (
-          L"ERROR: Unknown processor topology structure:"
-            L" Type = %d, Length = %d\n",
-          *ProcessorTopologyStructureType,
-          *ProcessorTopologyStructureLength
-          );
-    }
+    // Parse the Processor Topology Structure
+    ParseAcpiStruct (
+      2,
+      ProcessorTopologyStructurePtr,
+      &PpttDatabase,
+      Offset,
+      *ProcessorTopologyStructureType,
+      *ProcessorTopologyStructureLength,
+      NULL,
+      NULL
+      );
 
     ProcessorTopologyStructurePtr += *ProcessorTopologyStructureLength;
     Offset += *ProcessorTopologyStructureLength;
   } // while
+
+  // Report and validate processor topology structure counts
+  if (GetConsistencyChecking ()) {
+    ValidateAcpiStructCounts (&PpttDatabase);
+  }
 }
